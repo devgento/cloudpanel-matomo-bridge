@@ -1,0 +1,6 @@
+# Matomo Log Bridge Site Configuration
+# Format: domain|site_user|matomo_site_id|site_type|log_format
+
+# Example Sites
+# example.com|example_user|4|wordpress|cloudflare
+# anothersite.net|another_user|5|wordpress|cloudflare
