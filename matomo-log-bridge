@@ -1,0 +1,271 @@
+#!/bin/bash
+# Matomo Server-Side Log Bridge - CloudPanel Nginx to Matomo Analytics
+# Requires: logtail2, python3
+set -euo pipefail
+
+# Configuration
+CONFIG_DIR="/etc/matomo-import"
+STATE_DIR="/var/lib/matomo-import"
+LOG_DIR="/var/log/matomo-import"
+LOCK_FILE="$STATE_DIR/import.lock"
+LOG_FILE="$LOG_DIR/import.log"
+
+# Matomo settings (UPDATE THESE FOR YOUR ENVIRONMENT)
+MATOMO_URL="http://YOUR_[DOMAIN.com:8080/t/](https://DOMAIN.com:8080/t/)"
+MATOMO_IMPORT_SCRIPT="/home/YOUR_USER/htdocs/YOUR_[DOMAIN.com/t/misc/log-analytics/import_logs.py](https://DOMAIN.com/t/misc/log-analytics/import_logs.py)"
+MATOMO_CONFIG_FILE="/home/YOUR_USER/htdocs/YOUR_[DOMAIN.com/t/config/config.ini.php](https://DOMAIN.com/t/config/config.ini.php)"
+
+# Functions
+log() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG_FILE"
+}
+
+die() {
+    log "ERROR: $*"
+    exit 1
+}
+
+check_lock() {
+    if [ -f "$LOCK_FILE" ]; then
+        local pid=$(cat "$LOCK_FILE" 2>/dev/null || echo "")
+        if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+            die "Another import is running (PID: $pid)"
+        else
+            log "Removing stale lock file"
+            rm -f "$LOCK_FILE"
+        fi
+    fi
+    echo $$ > "$LOCK_FILE"
+    trap 'rm -f "$LOCK_FILE"' EXIT
+}
+
+usage() {
+    cat << 'USAGE'
+Usage: matomo-log-bridge [OPTIONS]
+
+Options:
+  --dry-run    Show what would be imported without calling Matomo
+  --config     Show configuration and exit
+  --help       Show this help
+USAGE
+    exit 0
+}
+
+# Parse arguments
+DRY_RUN=false
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --dry-run) DRY_RUN=true; shift ;;
+        --config) cat "$CONFIG_DIR/sites.conf" 2>/dev/null || echo "No config found"; exit 0 ;;
+        --help) usage ;;
+        *) echo "Unknown option: $1"; usage ;;
+    esac
+done
+
+# Main execution
+main() {
+    log "Starting Matomo log import (dry-run: $DRY_RUN)"
+    mkdir -p "$STATE_DIR" "$LOG_DIR"
+    check_lock
+    
+    if [ ! -f "$CONFIG_DIR/sites.conf" ]; then
+        die "Configuration file not found: $CONFIG_DIR/sites.conf"
+    fi
+    
+    local processed=0
+    local errors=0
+    
+    # Process each configured site
+    while IFS='|' read -r domain site_user matomo_site_id site_type log_format || [ -n "$domain" ]; do
+        [[ "$domain" =~ ^[[:space:]]*# ]] && continue
+        [[ -z "$domain" ]] && continue
+        
+        local log_path="/home/$site_user/logs/nginx/access.log"
+        local offset_file="$STATE_DIR/${domain}.offset"
+        
+        if [ ! -f "$log_path" ]; then
+            log "SKIP $domain - log file not found: $log_path"
+            continue
+        fi
+        
+        log "Processing $domain (Site ID: $matomo_site_id, Format: $log_format)"
+        
+        local new_lines
+        new_lines=$(logtail2 -f "$log_path" -o "$offset_file" 2>/dev/null || true)
+        local line_count=$(echo "$new_lines" | wc -l)
+        
+        if [ -z "$new_lines" ] || [ "$line_count" -eq 0 ]; then
+            log "OK $domain - no new lines to process"
+            ((processed+=1))
+            continue
+        fi
+        
+        if [ "$DRY_RUN" = true ]; then
+            log "DRY-RUN $domain - would import $line_count lines"
+            ((processed+=1))
+        else
+            local temp_log="$STATE_DIR/${domain}_temp.log"
+            echo "$new_lines" > "$temp_log"
+            
+            # Execute Python bridge via Local Config Bypass
+            if python3 "$MATOMO_IMPORT_SCRIPT" \
+                --url="$MATOMO_URL" \
+                --idsite="$matomo_site_id" \
+                --recorders=2 \
+                --enable-http-errors \
+                --enable-http-redirects \
+                --log-format-name="$log_format" \
+                --config="$MATOMO_CONFIG_FILE" \
+                "$temp_log" >> "$LOG_FILE" 2>&1; then
+                
+                log "OK $domain - imported $line_count lines"
+                ((processed+=1))
+            else
+                log "ERROR $domain - import failed"
+                ((errors+=1))
+            fi
+            
+            rm -f "$temp_log"
+        fi
+    done < "$CONFIG_DIR/sites.conf"
+    
+    log "Import cycle complete - $processed sites processed, $errors errors"
+    if [ "$errors" -gt 0 ]; then exit 1; fi
+}
+
+main "$@"#!/bin/bash
+# Matomo Server-Side Log Bridge - CloudPanel Nginx to Matomo Analytics
+# Requires: logtail2, python3
+set -euo pipefail
+
+# Configuration
+CONFIG_DIR="/etc/matomo-import"
+STATE_DIR="/var/lib/matomo-import"
+LOG_DIR="/var/log/matomo-import"
+LOCK_FILE="$STATE_DIR/import.lock"
+LOG_FILE="$LOG_DIR/import.log"
+
+# Matomo settings (UPDATE THESE FOR YOUR ENVIRONMENT)
+MATOMO_URL="http://YOUR_[DOMAIN.com:8080/t/](https://DOMAIN.com:8080/t/)"
+MATOMO_IMPORT_SCRIPT="/home/YOUR_USER/htdocs/YOUR_[DOMAIN.com/t/misc/log-analytics/import_logs.py](https://DOMAIN.com/t/misc/log-analytics/import_logs.py)"
+MATOMO_CONFIG_FILE="/home/YOUR_USER/htdocs/YOUR_[DOMAIN.com/t/config/config.ini.php](https://DOMAIN.com/t/config/config.ini.php)"
+
+# Functions
+log() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG_FILE"
+}
+
+die() {
+    log "ERROR: $*"
+    exit 1
+}
+
+check_lock() {
+    if [ -f "$LOCK_FILE" ]; then
+        local pid=$(cat "$LOCK_FILE" 2>/dev/null || echo "")
+        if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+            die "Another import is running (PID: $pid)"
+        else
+            log "Removing stale lock file"
+            rm -f "$LOCK_FILE"
+        fi
+    fi
+    echo $$ > "$LOCK_FILE"
+    trap 'rm -f "$LOCK_FILE"' EXIT
+}
+
+usage() {
+    cat << 'USAGE'
+Usage: matomo-log-bridge [OPTIONS]
+
+Options:
+  --dry-run    Show what would be imported without calling Matomo
+  --config     Show configuration and exit
+  --help       Show this help
+USAGE
+    exit 0
+}
+
+# Parse arguments
+DRY_RUN=false
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --dry-run) DRY_RUN=true; shift ;;
+        --config) cat "$CONFIG_DIR/sites.conf" 2>/dev/null || echo "No config found"; exit 0 ;;
+        --help) usage ;;
+        *) echo "Unknown option: $1"; usage ;;
+    esac
+done
+
+# Main execution
+main() {
+    log "Starting Matomo log import (dry-run: $DRY_RUN)"
+    mkdir -p "$STATE_DIR" "$LOG_DIR"
+    check_lock
+    
+    if [ ! -f "$CONFIG_DIR/sites.conf" ]; then
+        die "Configuration file not found: $CONFIG_DIR/sites.conf"
+    fi
+    
+    local processed=0
+    local errors=0
+    
+    # Process each configured site
+    while IFS='|' read -r domain site_user matomo_site_id site_type log_format || [ -n "$domain" ]; do
+        [[ "$domain" =~ ^[[:space:]]*# ]] && continue
+        [[ -z "$domain" ]] && continue
+        
+        local log_path="/home/$site_user/logs/nginx/access.log"
+        local offset_file="$STATE_DIR/${domain}.offset"
+        
+        if [ ! -f "$log_path" ]; then
+            log "SKIP $domain - log file not found: $log_path"
+            continue
+        fi
+        
+        log "Processing $domain (Site ID: $matomo_site_id, Format: $log_format)"
+        
+        local new_lines
+        new_lines=$(logtail2 -f "$log_path" -o "$offset_file" 2>/dev/null || true)
+        local line_count=$(echo "$new_lines" | wc -l)
+        
+        if [ -z "$new_lines" ] || [ "$line_count" -eq 0 ]; then
+            log "OK $domain - no new lines to process"
+            ((processed+=1))
+            continue
+        fi
+        
+        if [ "$DRY_RUN" = true ]; then
+            log "DRY-RUN $domain - would import $line_count lines"
+            ((processed+=1))
+        else
+            local temp_log="$STATE_DIR/${domain}_temp.log"
+            echo "$new_lines" > "$temp_log"
+            
+            # Execute Python bridge via Local Config Bypass
+            if python3 "$MATOMO_IMPORT_SCRIPT" \
+                --url="$MATOMO_URL" \
+                --idsite="$matomo_site_id" \
+                --recorders=2 \
+                --enable-http-errors \
+                --enable-http-redirects \
+                --log-format-name="$log_format" \
+                --config="$MATOMO_CONFIG_FILE" \
+                "$temp_log" >> "$LOG_FILE" 2>&1; then
+                
+                log "OK $domain - imported $line_count lines"
+                ((processed+=1))
+            else
+                log "ERROR $domain - import failed"
+                ((errors+=1))
+            fi
+            
+            rm -f "$temp_log"
+        fi
+    done < "$CONFIG_DIR/sites.conf"
+    
+    log "Import cycle complete - $processed sites processed, $errors errors"
+    if [ "$errors" -gt 0 ]; then exit 1; fi
+}
+
+main "$@"
